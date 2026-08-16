@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 with lib;
 
@@ -7,10 +12,8 @@ let
 
   mkOnec = pkgs.callPackage ../pkgs/package.nix { };
 
-  # Версия выводится из имени файла дистрибутива, скачанного с портала 1С
-  # (server64_8_3_27_2130.zip — версия кодируется через "_" вместо "."),
-  # чтобы не заставлять вписывать её руками. Если имя нестандартное —
-  # версию нужно задать явно.
+  # Версия выводится из имени файла дистрибутива (server64_8_3_XX_XXXX.zip);
+  # при нестандартном имени задайте её явно.
   versionFromArchive =
     archive:
     let
@@ -27,17 +30,9 @@ let
     else
       throw "services.onec: ${what} — version не задана и не выводится из имени архива '${archiveFile}'";
 
-  # "ru" (как и любой другой нелатинский язык интерфейса) — это отдельный
-  # УСТАНАВЛИВАЕМЫЙ компонент инсталлятора (--enable-components), а не
-  # встроенный по умолчанию функционал: штатный набор по умолчанию у
-  # самого инсталлятора — "client_full,langs,en,ru,advanced" ("langs" в
-  # этой строке — служебное слово самого --help, а не реальный компонент:
-  # в списке "Allowed" его нет, --enable-components его не принимает).
-  # Если явно не запросить компонент с кодом cfg.language, в собранный
-  # пакет физически не попадают файлы с переводом интерфейса — и тогда ни
-  # LANG, ни conf.cfg, ни /L не помогают, потому что переводить нечем.
-  # "en" в списке допустимых компонентов не встречается — он всегда в
-  # комплекте и отдельно не запрашивается.
+  # Нелатинский язык интерфейса — отдельный устанавливаемый компонент
+  # (--enable-components), без него файлы перевода не попадают в сборку.
+  # "en" в список компонентов не добавляется — он всегда в комплекте.
   languageComponents = optional (cfg.language != "en") cfg.language;
 
   clientPackage = mkOnec {
@@ -53,9 +48,8 @@ let
 
   enabledInstances = filterAttrs (_: i: i.enable) cfg.server.instances;
 
-  # Каждый инстанс может жить на своём дистрибутиве: archiveFile/version
-  # по умолчанию берутся общие, но их можно переопределить — так на одной
-  # машине поднимаются сервера разных версий (у каждого свой архив).
+  # archiveFile/version по умолчанию общие, но каждый инстанс может их
+  # переопределить — так на одной машине можно поднять сервера разных версий.
   instArchive = i: if i.archiveFile != null then i.archiveFile else cfg.archiveFile;
   instVersion = name: i: resolveVersion "instance '${name}'" (instArchive i) i.version;
 
@@ -69,10 +63,8 @@ let
       pname = "1c-enterprise-server";
     };
 
-  # Каталог данных надо создать и передать пользователю сервиса до старта.
-  # "+" перед ExecStartPre — эта команда выполняется от root, в отличие от
-  # самого ExecStart (штатный PermissionsStartOnly для этого объявлен
-  # устаревшим и в новых systemd уже не действует).
+  # Каталог данных нужно создать и передать пользователю сервиса до старта;
+  # "+" перед ExecStartPre запускает эту команду от root.
   prepareDataDir =
     unit: dir:
     "+"
@@ -83,21 +75,8 @@ let
       ''
     );
 
-  # core83.so собирает и запускает через /bin/sh команду вида
-  #   /sbin/ldconfig -p | awk '/^[\t ]*<библиотека>/ ...'
-  # — так 1С ищет опциональные клиентские библиотеки СУБД (libpq,
-  # libodbc, libmysqlclient). В PATH сервиса systemd на NixOS есть
-  # coreutils/findutils/grep/sed, но НЕ gawk, поэтому в журнал каждые
-  # полминуты сыпалось "awk: command not found". Даём awk.
-  #
-  # Вторую половину этой команды починить нельзя и не нужно:
-  # /sbin/ldconfig вызывается по абсолютному пути (PATH не участвует), а
-  # на NixOS нет /etc/ld.so.cache — даже штатный ldconfig из nixpkgs на
-  # `-p` отвечает "Can't open cache file". Библиотеки здесь ищутся через
-  # RUNPATH, так что сам способ поиска бессмысленен: probe в любом случае
-  # вернёт пустой список. На работу это не влияет (внешние СУБД
-  # подключаются через LD_LIBRARY_PATH сервиса), в журнале остаётся одна
-  # строка про отсутствующий /sbin/ldconfig.
+  # 1С ищет опциональные клиентские библиотеки СУБД через `ldconfig -p | awk`,
+  # но gawk отсутствует в PATH сервиса systemd на NixOS — даём его явно.
   servicePath = [ pkgs.gawk ];
 
   commonServiceConfig = {
@@ -119,10 +98,8 @@ let
       to = toInt (elemAt parts 1);
     };
 
-  # ibcmd/ibsrv кладутся в PATH с суффиксом версии (ibcmd-8.3.27.2130),
-  # как это сделано в nix-1c-server: одноимённые бинарники разных версий
-  # иначе перекрыли бы друг друга. Ключ атрибута — имя команды, поэтому
-  # два инстанса одной версии не создают конфликтующих пакетов.
+  # ibcmd/ibsrv кладутся в PATH с суффиксом версии (ibcmd-8.3.XX.XXXX),
+  # иначе одноимённые бинарники разных версий перекрыли бы друг друга.
   programPackages =
     let
       entries = concatLists (
@@ -138,8 +115,7 @@ let
               '';
             };
           in
-          optional i.programs.ibcmd.enable (mk "ibcmd")
-          ++ optional i.programs.ibsrv.enable (mk "ibsrv")
+          optional i.programs.ibcmd.enable (mk "ibcmd") ++ optional i.programs.ibsrv.enable (mk "ibsrv")
         ) enabledInstances
       );
     in
@@ -150,7 +126,7 @@ let
       enable = mkEnableOption "этот инстанс сервера 1С";
 
       archiveFile = mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr (types.either types.path types.str);
         default = null;
         description = ''
           Дистрибутив для этого инстанса. При null берётся общий
@@ -164,7 +140,7 @@ let
         default = null;
         description = ''
           Версия инстанса. При null выводится из имени файла архива
-          (стандартный формат server64_8_3_27_2130.zip).
+          (стандартный формат server64_8_3_XX_XXXX.zip).
         '';
       };
 
@@ -357,17 +333,17 @@ in
     enable = mkEnableOption "1С:Предприятие 8.3 (сервер и/или клиент)";
 
     archiveFile = mkOption {
-      type = types.str;
+      type = types.either types.path types.str;
       description = ''
         Абсолютный путь к фирменному дистрибутиву — zip-архиву (например
-        server64_8_3_27_2130.zip), скачанному с портала 1С под вашей
-        лицензией. Указывается строкой, а не путём-литералом — Nix
-        некорректно парсит path-литералы с нелатинскими символами в
-        каталогах (например, "Загрузки"). Распаковкой архива и поиском
+        server64_8_3_XX_XXXX.zip), скачанному с портала 1С под вашей
+        лицензией. Можно указывать path-литералом из flake или строкой с
+        абсолютным путём. Строка полезна для путей с нелатинскими
+        символами в каталогах (например, "Загрузки"). Распаковкой архива и поиском
         внутри него инсталлятора занимается сам Nix во время сборки —
         ничего распаковывать вручную не нужно.
       '';
-      example = "/home/user/Downloads/server64_8_3_27_2130/server64_8_3_27_2130.zip";
+      example = "/home/user/Downloads/server64_8_3_XX_XXXX/server64_8_3_XX_XXXX.zip";
     };
 
     version = mkOption {
@@ -375,7 +351,7 @@ in
       default = null;
       description = ''
         Версия дистрибутива. При null выводится из имени файла в
-        `archiveFile` (стандартный формат server64_8_3_27_2130.zip).
+        `archiveFile` (стандартный формат server64_8_3_XX_XXXX.zip).
       '';
     };
 
@@ -457,8 +433,7 @@ in
         group = cfg.server.group;
         home = cfg.server.home;
         createHome = true;
-        # Без двоеточия: NixOS требует, чтобы GECOS-поле не содержало ни
-        # переносов строк, ни ":" — это разделитель полей в /etc/passwd.
+        # Без двоеточия: это разделитель полей в /etc/passwd.
         description = "1C Enterprise server";
       };
 
@@ -522,9 +497,7 @@ in
               ExecStart = concatStringsSep " " (
                 [
                   "${pkg}/bin/ibsrv"
-                  (
-                    if standalone.settings.http.enable then "--enable-http-gate" else "--disable-http-gate"
-                  )
+                  (if standalone.settings.http.enable then "--enable-http-gate" else "--disable-http-gate")
                   "--http-port=${toString standalone.settings.http.port}"
                   "--data=${standalone.settings.data}"
                   "--direct-regport=${toString standalone.settings.direct-regport}"
@@ -579,10 +552,6 @@ in
               standalone.settings.debug-port
             ]
             # http-порт открывается только если сам HTTP-шлюз включён.
-            # (В nix-1c-server здесь стоял lib.mkIf прямо внутри списка —
-            # так он не работает: mkIf возвращает атрибут-обёртку, а не
-            # элемент списка, и в allowedTCPPorts попадал мусор вместо
-            # номера порта.)
             ++ optional standalone.settings.http.enable standalone.settings.http.port
           )
           ++ optional (ras.enable && ras.openFirewall) ras.port
@@ -597,9 +566,9 @@ in
             standalone = i.services.standalone-server;
           in
           optional (full.enable && full.openFirewall) (parseRange full.settings.portRange)
-          ++ optional (
-            standalone.enable && standalone.openFirewall
-          ) (parseRange standalone.settings.direct-range)
+          ++ optional (standalone.enable && standalone.openFirewall) (
+            parseRange standalone.settings.direct-range
+          )
         ) enabledInstances
       );
     })
