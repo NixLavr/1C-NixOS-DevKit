@@ -379,26 +379,38 @@ mkOnec =
           static char  map_cairo30[] = "@CAIRO@";
           static char  map_fcfg30[] = "@FONTCONFIG@";
           static char  map_frt30[] = "@FREETYPE@";
+          static char  map_cairov8[] = "@CAIROV8@";
           if (!real_dlopen)
             real_dlopen = (void *(*)(const char *, int)) dlsym(RTLD_NEXT, "dlopen");
           if (file) {
-            /* grphcs.so догружает через dlopen СВОЙ бандловый cairo
-               (libcairo-v8.so, без SONAME, никем не NEEDED) в глобальное
+            /* grphcs.so догружает через dlopen СВОЙ бандловый
+               libcairo-v8.so (без SONAME, никем не NEEDED) в глобальное
                пространство имён — при том, что gtk3/wx/webkit к этому
                моменту уже притащили nix'овый libcairo.so.2. Две разные
                реализации cairo в одном процессе экспортируют одни и те же
-               cairo_*: объект, созданный бандловой копией, уходит во
-               внутренности nix'овой (у них разный layout структур), и
-               толстый клиент падает по SIGSEGV в pixman на первой же
-               отрисовке окна (стек: grphcs -> cairo_mask@libcairo-v8 ->
-               _cairo_gstate_mask@libcairo.so.2 -> pixman). Отдаём ту же
-               самую nix'овую копию: dlopen вернёт handle уже загруженного
-               объекта, второй реализации в процессе не появится вовсе.
-               RTLD_DEEPBIND здесь НЕ решение — состояние всё равно
-               делится между двумя копиями, и SIGSEGV лишь сменяется на
-               "free(): invalid size". */
+               cairo_*, и это фатально: cairo_t создаёт GTK (nix cairo,
+               см. wxWindow::GTKSendPaintEvents), а рисует в него код 1С
+               через бандловую копию с другим layout структур -> SIGSEGV
+               в pixman на первой же отрисовке окна (стек: grphcs ->
+               cairo_mask@libcairo-v8 -> _cairo_gstate_mask@libcairo.so.2
+               -> pixman). RTLD_DEEPBIND тут НЕ решение: состояние всё
+               равно делится между копиями, SIGSEGV лишь сменяется на
+               "free(): invalid size".
+
+               При этом libcairo-v8.so — не только cairo: в него слинкованы
+               ещё fontconfig, freetype, harfbuzz, pixman, libpng и zlib, и
+               grphcs.so достаёт оттуда через dlsym все четыре семейства
+               (146 cairo_*, 28 Fc*, 23 FT_*, 17 hb_*). Поэтому отдать
+               голый libcairo.so.2 нельзя — Fc*/FT_*/hb_* тогда
+               резолвятся в NULL, 1С остаётся без подбора шрифтов и без
+               загрузки глифов: окно рисуется вообще без текста, а метрики
+               шрифта приходят нулевыми, и клиент падает по SIGFPE, деля
+               на такую метрику. Отдаём заглушку, у которой все четыре
+               nix-библиотеки прописаны в DT_NEEDED: dlsym() по handle
+               ищет символы и в зависимостях объекта, так что находится
+               всё сразу, а реализация cairo в процессе остаётся одна. */
             if (strstr(file, "libcairo-v8.so"))
-              return real_dlopen(map_cairo30, flags);
+              return real_dlopen(map_cairov8, flags);
             if (strstr(file, "/lib/") && strstr(file, "libharfbuzz.so"))
               return real_dlopen(map_hbz30, flags);
             if (strstr(file, "/lib/") && strstr(file, "libcairo.so"))
@@ -411,10 +423,28 @@ mkOnec =
           return real_dlopen(file, flags);
         }
         EOF
+        # Заглушка вместо бандлового libcairo-v8.so (см. подробный
+        # комментарий в dlopen-remap.c выше). Своего кода в ней нет вовсе —
+        # нужна ровно одна вещь: чтобы в DT_NEEDED лежали все четыре
+        # nix-библиотеки, которые 1С ожидает найти в libcairo-v8.so.
+        # --no-as-needed обязателен: без него линкер выкинет все четыре
+        # зависимости, поскольку сама заглушка не использует из них ни
+        # одного символа, и dlsym() по её handle не найдёт ничего.
+        : > cairo-v8-stub.c
+        ${gcc}/bin/gcc -shared -fPIC -o "$out/lib/libcairo-v8-stub.so" cairo-v8-stub.c \
+          -Wl,--no-as-needed \
+          -Wl,-rpath,${cairo}/lib -Wl,-rpath,${fontconfig.lib}/lib \
+          -Wl,-rpath,${freetype}/lib -Wl,-rpath,${harfbuzz}/lib \
+          ${cairo}/lib/libcairo.so.2 \
+          ${fontconfig.lib}/lib/libfontconfig.so.1 \
+          ${freetype}/lib/libfreetype.so.6 \
+          ${harfbuzz}/lib/libharfbuzz.so.0
+
         sed -e "s|@HARFBUZZ@|${harfbuzz}/lib/libharfbuzz.so.0|" \
             -e "s|@CAIRO@|${cairo}/lib/libcairo.so.2|" \
             -e "s|@FONTCONFIG@|${fontconfig.lib}/lib/libfontconfig.so.1|" \
             -e "s|@FREETYPE@|${freetype}/lib/libfreetype.so.6|" \
+            -e "s|@CAIROV8@|$out/lib/libcairo-v8-stub.so|" \
             dlopen-remap.c > dlopen-remap-real.c
         ${gcc}/bin/gcc -O2 -shared -fPIC -o "$out/lib/dlopen-remap.so" dlopen-remap-real.c -ldl
       ''}
