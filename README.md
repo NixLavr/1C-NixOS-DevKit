@@ -192,23 +192,35 @@ Nix ошибается на путях-литералах вида `/foo/бар/
 
 ```nix
 {
-  imports = [ ./nix/module.nix ];
+  imports = [ ./modules/module.nix ];
 
   services.onec = {
     enable = true;
     archiveFile = "/home/user/Downloads/server64_8_3_27_2130/server64_8_3_27_2130.zip";
     language = "ru";
 
-    server = {
-      enable = true;
-      components = [ "server" "server_admin" "ws" ];
-      ras.enable = true;      # rac/ras — консоль администрирования кластера
-      openFirewall = true;
-    };
-
     client = {
       enable = true;                        # добавить клиент в PATH всем пользователям
       components = [ "client_thin" ];       # или [ "client_full" ]
+    };
+
+    server.instances."main" = {
+      enable = true;
+
+      programs.ibcmd.enable = true;         # ibcmd-8.3.27.2130 в PATH
+
+      services.full-server = {              # кластер: ragent/rmngr/rphost
+        enable = true;
+        openFirewall = true;
+      };
+
+      services.ras.enable = true;           # rac/ras — консоль администрирования кластера
+
+      services.standalone-server = {        # автономный сервер (ibsrv)
+        enable = true;
+        openFirewall = true;
+        settings.name = "main";
+      };
     };
   };
 }
@@ -218,12 +230,68 @@ Nix ошибается на путях-литералах вида `/foo/бар/
 из имени файла в `archiveFile` (`server64_8_3_27_2130.zip`, версия
 кодируется через "_" вместо ".").
 
-Модуль заводит системного пользователя `usr1cv8`/`grp1cv8`, каталог
-данных кластера `/var/lib/1cv8` (через `StateDirectory`) и юниты
-`1c-ragent.service` / `1c-ras.service`, повторяющие по смыслу штатные
-`srv1cv8-*.service` / `ras-*.service` из дистрибутива, но с путями,
-пригодными для Nix store. `services.onec.client.enable` просто кладёт
-клиентский пакет в `environment.systemPackages` — это не сервис.
+`services.onec.client.enable` просто кладёт клиентский пакет в
+`environment.systemPackages` — это не сервис.
+
+### Инстансы сервера
+
+Серверная часть построена вокруг `services.onec.server.instances` —
+набора именованных инстансов (схема перенесена из
+[nix-1c-server](https://github.com/sund3RRR/nix-1c-server)). Ключ
+атрибута попадает в имена юнитов, поэтому инстансы не конфликтуют:
+
+| Что включено | Юнит |
+| --- | --- |
+| `services.full-server` | `1c-server-<метка>.service` |
+| `services.standalone-server` | `1c-standalone-server-<метка>.service` |
+| `services.ras` | `1c-ras-<метка>.service` |
+
+Все три независимы: можно поднять только автономный сервер, только
+кластер, или всё сразу. Модуль заводит системного пользователя
+`usr1cv8`/`grp1cv8` (настраивается через `services.onec.server.user` /
+`.group` / `.home`), создаёт каталоги данных и передаёт их этому
+пользователю перед стартом сервиса.
+
+Инстансы могут быть **разных версий** — у каждого свои `archiveFile` и
+`version`, по умолчанию берутся общие:
+
+```nix
+services.onec.server.instances = {
+  main = {
+    enable = true;
+    services.standalone-server.enable = true;
+    services.standalone-server.settings.name = "main";
+  };
+  testing = {
+    enable = true;
+    archiveFile = "/home/user/Downloads/server64_8_3_24_1368.zip";
+    services.standalone-server = {
+      enable = true;
+      settings = {
+        name = "test";
+        http.port = 8315;
+        direct-regport = 1542;
+        direct-range = "1610:1641";
+        debug-port = 1555;
+        data = "/var/lib/1cv8-testing";
+        extraArgs = [ "--disable-extended-designer-features" ];
+      };
+    };
+  };
+};
+```
+
+Полный набор настроек — в `modules/module.nix`: у кластера это
+`port`, `regPort`, `portRange`, `data`, `securityLevel`, `pingPeriod`,
+`pingTimeout`, `debug`, `keytabFile`, `extraArgs`; у автономного
+сервера — `http.enable`/`http.port`, `data`, `name`, `direct-regport`,
+`direct-range`, `debug-port`, `extraArgs`.
+
+В отличие от nix-1c-server, FHS-обёртка (`buildFHSEnv`) здесь не
+используется: тот проект собирает сервер из `.deb`-пакетов и запускает
+неподготовленные бинарники, а тут всё дерево проходит через
+`autoPatchelfHook`, так что юниты вызывают бинарники из `$out/bin`
+напрямую.
 
 ## Важно про лицензию
 
