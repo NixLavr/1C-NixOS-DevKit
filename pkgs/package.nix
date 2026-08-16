@@ -61,6 +61,14 @@ mkOnec =
   }:
   let
     isClient = lib.any (c: lib.hasPrefix "client_" c) components;
+
+    # desktop_icons — штатный компонент инсталлятора: даёт готовые
+    # .desktop-файлы и иконки (usr/share/applications,
+    # usr/share/icons/hicolor) для клиентских бинарников, см. installPhase
+    # ниже. Смысла делать его настраиваемым нет — подключаем всегда вместе
+    # с любым client_*, если вызывающий ещё не указал его сам.
+    desktopIconsComponent = lib.optional (isClient && !(lib.elem "desktop_icons" components)) "desktop_icons";
+    allComponents = components ++ desktopIconsComponent;
   in
   stdenv.mkDerivation {
     inherit pname version;
@@ -204,7 +212,7 @@ mkOnec =
         exit 1
       fi
 
-      enabled="${lib.concatStringsSep "," components}"
+      enabled="${lib.concatStringsSep "," allComponents}"
       for c in ''${enabled//,/ }; do
         case " $all_components " in
           *" $c "*) ;;
@@ -366,6 +374,82 @@ mkOnec =
           ln -sf "$dest/$b" "$out/bin/$b"
         fi
       done
+
+      ${lib.optionalString isClient ''
+        # Компонент desktop_icons (включён выше в allComponents) в
+        # обычной, не-песочной установке пишет готовые .desktop-файлы и
+        # полный набор иконок (usr/share/icons/hicolor/*, включая
+        # scalable/*.svg) в $workroot/usr/share — при их наличии
+        # переиспользуем их вместо ручной разметки. Внутри строгой
+        # песочницы `nix build` этот конкретный пост-install шаг
+        # инсталлятора эмпирически оказывается тихим no-op (ничего не
+        # пишет и не жалуется на это) — судя по всему, часть его логики
+        # (там же лежит и polkit-action для pk1cv8) рассчитывает на D-Bus/
+        # systemd, которых в песочнице попросту нет. Поэтому ниже —
+        # запасной путь: свой минимальный .desktop без иконки, чтобы
+        # GUI-клиент в любом случае был виден в меню приложений.
+        mkdir -p "$out/share/applications"
+        if [ -d "$workroot/usr/share/applications" ]; then
+          mkdir -p "$out/share/icons"
+          keep=""
+          for f in "$workroot"/usr/share/applications/*.desktop; do
+            base="$(basename "$f" .desktop)"
+            bin="$(sed -n 's|^Exec=/opt/1cv8/x86_64/[^/]*/||p' "$f" | head -n1)"
+            # Только бинарники, реально попавшие в $out/bin: у
+            # деинсталлятора (uninstallAsRoot) он уже удалён выше как
+            # мусор, а у бинарников, не входящих в эту сборку (например
+            # 1cv8 у тонкого клиента) — просто отсутствует.
+            if [ -z "$bin" ] || [ ! -e "$out/bin/$bin" ]; then
+              continue
+            fi
+            sed "s|^Exec=.*|Exec=$out/bin/$bin|" "$f" > "$out/share/applications/$base.desktop"
+            keep="$keep $base"
+          done
+          # Иконки — только для оставленных .desktop-файлов (та же логика
+          # фильтрации), иначе в замыкание пакета тянутся никем не
+          # используемые иконки деинсталлятора/pk1cv8/отфильтрованных
+          # бинарников.
+          find "$workroot/usr/share/icons" -type f | while read -r iconFile; do
+            iconBase="$(basename "$iconFile")"
+            iconBase="''${iconBase%.*}"
+            case " $keep " in
+              *" $iconBase "*)
+                rel="''${iconFile#"$workroot"/usr/share/icons/}"
+                mkdir -p "$out/share/icons/$(dirname "$rel")"
+                cp "$iconFile" "$out/share/icons/$rel"
+                ;;
+            esac
+          done
+        fi
+        if [ -e "$out/bin/1cv8" ] && [ -z "$(find "$out/share/applications" -iname '1cv8-*.desktop' 2>/dev/null)" ]; then
+          cat > "$out/share/applications/1cv8.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Version=1.0
+Terminal=false
+Categories=Office;Finance;
+Name=1C:Enterprise (${version}) — толстый клиент
+Name[en]=1C:Enterprise (${version}) — thick client
+Comment=Запуск в режиме 1С:Предприятия
+Comment[en]=Run in 1C:Enterprise mode
+Exec=$out/bin/1cv8
+DESKTOP
+        fi
+        if [ -e "$out/bin/1cv8c" ] && [ -z "$(find "$out/share/applications" -iname '1cv8c-*.desktop' 2>/dev/null)" ]; then
+          cat > "$out/share/applications/1cv8c.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Version=1.0
+Terminal=false
+Categories=Office;Finance;
+Name=1C:Enterprise (${version}) — тонкий клиент
+Name[en]=1C:Enterprise (${version}) — thin client
+Comment=Запуск в режиме 1С:Предприятия
+Comment[en]=Run in 1C:Enterprise mode
+Exec=$out/bin/1cv8c
+DESKTOP
+        fi
+      ''}
 
       runHook postInstall
     '';
