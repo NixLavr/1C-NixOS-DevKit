@@ -377,6 +377,23 @@ mkOnec =
           if (!real_dlopen)
             real_dlopen = (void *(*)(const char *, int)) dlsym(RTLD_NEXT, "dlopen");
           if (file) {
+            /* grphcs.so догружает через dlopen СВОЙ бандловый cairo
+               (libcairo-v8.so, без SONAME, никем не NEEDED) в глобальное
+               пространство имён — при том, что gtk3/wx/webkit к этому
+               моменту уже притащили nix'овый libcairo.so.2. Две разные
+               реализации cairo в одном процессе экспортируют одни и те же
+               cairo_*: объект, созданный бандловой копией, уходит во
+               внутренности nix'овой (у них разный layout структур), и
+               толстый клиент падает по SIGSEGV в pixman на первой же
+               отрисовке окна (стек: grphcs -> cairo_mask@libcairo-v8 ->
+               _cairo_gstate_mask@libcairo.so.2 -> pixman). Отдаём ту же
+               самую nix'овую копию: dlopen вернёт handle уже загруженного
+               объекта, второй реализации в процессе не появится вовсе.
+               RTLD_DEEPBIND здесь НЕ решение — состояние всё равно
+               делится между двумя копиями, и SIGSEGV лишь сменяется на
+               "free(): invalid size". */
+            if (strstr(file, "libcairo-v8.so"))
+              return real_dlopen(map_cairo30, flags);
             if (strstr(file, "/lib/") && strstr(file, "libharfbuzz.so"))
               return real_dlopen(map_hbz30, flags);
             if (strstr(file, "/lib/") && strstr(file, "libcairo.so"))
