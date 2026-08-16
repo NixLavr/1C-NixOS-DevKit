@@ -21,11 +21,12 @@
         mkPostgresql1c = pkgs.callPackage ./pkgs/postgresql-1c { };
       };
 
-      packages.${system}.postgresql_1c = self.lib.${system}.mkPostgresql1c {
-        archiveFile = "/home/lavr/nixos-config-main/flakes/postgresql_18.1_2_ubuntu_24.04_x86_64_package.tar.bz2";
+      packages.${system} = {
+        postgresql_1c = self.lib.${system}.mkPostgresql1c {
+          archiveFile = "/home/lavr/nixos-config-main/flakes/postgresql_18.1_2_ubuntu_24.04_x86_64_package.tar.bz2";
+        };
+        onec-connect = pkgs.callPackage ./pkgs/onec-connect.nix { };
       };
-
-      packages.${system}.onec-connect = pkgs.callPackage ./pkgs/onec-connect.nix { };
 
       nixosModules.default = import ./modules/module.nix;
       nixosModules.onec = self.nixosModules.default;
