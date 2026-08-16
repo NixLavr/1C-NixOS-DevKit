@@ -93,9 +93,11 @@ HTML-читалка, штатные systemd-юниты с FHS-путями) уд
 ```
 
 Для PostgreSQL 1С аналогично: `onec-devkit.nixosModules.postgresql_1c`,
-генератор пакета — `onec-devkit.lib.${system}.mkPostgresql1c`. Без флейков
-модуль можно импортировать и напрямую по пути (`imports = [
-./modules/module.nix ];`), если репозиторий склонирован локально.
+генератор пакета — `onec-devkit.lib.${system}.mkPostgresql1c`. Пакет
+1C-Connect (без модуля, просто бинарник) — `onec-devkit.packages.${system}.onec-connect`,
+см. [1C-Connect](#1c-connect). Без флейков модуль можно импортировать и
+напрямую по пути (`imports = [ ./modules/module.nix ];`), если репозиторий
+склонирован локально.
 
 ## NixOS-модуль
 
@@ -187,13 +189,26 @@ services.onec.server.instances = {
 
 ## 1C-Connect
 
-`pkgs/onec-connect.nix` в корне репозитория (не в этом flake) — отдельный
-пакет для официального Linux-клиента [1C-Connect](https://1c-connect.com/),
-сервиса удалённого доступа/техподдержки от 1С. Дистрибутив скачивается с
-`updates.1c-connect.com` и запускается как готовый `.tar.gz` без сборки из
-исходников; пакет лишь патчит ELF-зависимости через `autoPatchelfHook` и
-оборачивает бинарник нужным `LD_LIBRARY_PATH`. С самим 1С:Предприятием
-(этим flake) он никак не связан — общее только происхождение от фирмы 1С.
+`pkgs/onec-connect.nix` — пакет для официального Linux-клиента
+[1C-Connect](https://1c-connect.com/), сервиса удалённого доступа/
+техподдержки от 1С. Дистрибутив скачивается с `updates.1c-connect.com` и
+запускается как готовый `.tar.gz` без сборки из исходников; пакет лишь
+патчит ELF-зависимости через `autoPatchelfHook` и оборачивает бинарник
+нужным `LD_LIBRARY_PATH`. С самим 1С:Предприятием он никак не связан —
+общее только происхождение от фирмы 1С, но экспортируется из этого же
+flake как отдельный пакет: `packages.${system}.onec-connect`.
+
+NixOS-модуля у него нет — подключается через `environment.systemPackages`
+из flake-input (см. [Подключение флейка](#подключение-флейка)):
+
+```nix
+{
+  environment.systemPackages = [ onec-devkit.packages.${system}.onec-connect ];
+}
+```
+
+`nixpkgs.config.allowUnfree = true` обязателен — лицензия
+`unfreeRedistributable`.
 
 ## Важно про лицензию
 
