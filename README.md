@@ -1,16 +1,8 @@
 # 1С:Предприятие 8.3 — пакет для Nix/NixOS
 
-Дистрибутив 1С скачивается с портала как zip-архив (например
-`server64_8_3_XX_XXXX.zip`) с самораспаковывающимся инсталлятором внутри
-(`setup-full-*.run`, InstallBuilder), который жёстко требует root.
-`package.nix` распаковывает архив, находит инсталлятор и запускает его без
-root внутри обычной песочницы `nix build`, используя bubblewrap для
-эмуляции недостающего окружения — никаких внешних скриптов или ослабления
-sandbox.
-
-Список допустимых `--enable-components` не хранится в Nix-файле как
-константа: `package.nix` считывает его прямо из инсталлятора во время
-сборки, так что обновление дистрибутива не требует правок.
+Генератор Nix-пакетов и модуль NixOS для официального дистрибутива
+1С:Предприятие 8.3 (сервер и клиент), а также сопутствующих компонентов:
+PostgreSQL для 1С и клиент 1C-Connect.
 
 ## Использование пакета напрямую
 
@@ -28,44 +20,11 @@ mkOnec {
 }
 ```
 
-`archiveFile` — строка, а не путь-литерал: с path-литералом парсер Nix
-ошибается на нелатинских символах в имени каталога (например, `~/Загрузки`).
-
-Язык интерфейса — отдельный **устанавливаемый компонент** инсталлятора, а
-не встроенная опция: без кода языка (`"ru"` и т.п.) в списке `components`
-файлы перевода физически не попадают в сборку. `module.nix` добавляет его
-сам из `services.onec.language`; при прямом использовании `package.nix` —
-нужно руками.
-
-Собранный пакет кладёт файлы в `$out/opt/1cv8/x86_64/<version>/` (1С сам
-ищет свои ресурсы рядом со своими `.so`, поэтому путь менять нельзя) и
-линкует основные бинарники в `$out/bin`. Мусор инсталлятора (деинсталлятор,
-HTML-читалка, штатные systemd-юниты с FHS-путями) удаляется; документация и
-лицензии переносятся в `$out/share/doc/<pname>/`.
-
-### Толстый клиент (`client_full`) и Wayland
-
-Толстый клиент (`1cv8`) падает при инициализации EGL под Wayland —
-`package.nix` автоматически гасит `WAYLAND_DISPLAY` в обёртке клиентских
-бинарников, тонкий клиент (`1cv8c`) при этом уходит на XWayland.
-
-### Ярлыки в меню приложений (.desktop)
-
-Штатный компонент `desktop_icons` пишет `.desktop`-файлы и иконки, но
-внутри строгой песочницы `nix build` этот шаг инсталлятора — тихий no-op
-(нужен D-Bus/systemd). На этот случай `package.nix` подставляет свой
-минимальный `.desktop` без фирменной иконки для каждого собранного
-клиентского бинарника.
-
-## Зависимости
-
-Почти всё (libstdc++, ICU, tcmalloc, libssh и т.д.) 1С приносит в
-комплекте — `autoPatchelfHook` чинит интерпретатор и сшивает эти файлы
-между собой. Из внешнего окружения нужны:
-
-- **glibc, krb5, keyutils, e2fsprogs** — всегда.
-- **glib, gdk-pixbuf, cairo, pango, atk, gtk3, cups, libGL, webkitgtk_4_1**
-  — только для клиентских компонентов (`client_*`).
+`archiveFile` — путь к скачанному с портала 1С zip-архиву дистрибутива,
+указывается строкой (не path-литералом). Язык интерфейса (`"ru"` и т.п.)
+нужно включить в список `components` — без него в сборку не попадут файлы
+перевода. `module.nix` (см. ниже) делает это автоматически из
+`services.onec.language`.
 
 ## Подключение флейка
 
@@ -93,9 +52,10 @@ HTML-читалка, штатные systemd-юниты с FHS-путями) уд
 ```
 
 Для PostgreSQL 1С аналогично: `onec-devkit.nixosModules.postgresql_1c`,
-генератор пакета — `onec-devkit.lib.${system}.mkPostgresql1c`. Пакет
-1C-Connect (без модуля, просто бинарник) — `onec-devkit.packages.${system}.onec-connect`,
-см. [1C-Connect](#1c-connect). Без флейков модуль можно импортировать и
+генератор пакета — `onec-devkit.lib.${system}.mkPostgresql1c`, подробности —
+[PostgreSQL 1С](#postgresql-1с). Пакет 1C-Connect (без модуля, просто
+бинарник) — `onec-devkit.packages.${system}.onec-connect`, см.
+[1C-Connect](#1c-connect). Без флейков модуль можно импортировать и
 напрямую по пути (`imports = [ ./modules/module.nix ];`), если репозиторий
 склонирован локально.
 
@@ -187,16 +147,59 @@ services.onec.server.instances = {
 
 Полный набор настроек — в `modules/module.nix`.
 
+## PostgreSQL 1С
+
+`pkgs/postgresql-1c` — пакет PostgreSQL, собранный из фирменного архива 1С
+для Ubuntu.
+
+### Использование пакета напрямую
+
+```nix
+let
+  pkgs = import <nixpkgs> { config.allowUnfree = true; };
+  mkPostgresql1c = pkgs.callPackage ./pkgs/postgresql-1c { };
+in
+mkPostgresql1c {
+  archiveFile = "/home/user/Downloads/postgresql_18.1-2.1C_ubuntu_x86_64_package.tar.bz2";
+  version = "18.1-2.1C"; # необязательно, это значение по умолчанию
+}
+```
+
+### NixOS-модуль
+
+```nix
+{
+  imports = [ onec-devkit.nixosModules.postgresql_1c ];
+
+  services.postgresql_1c = {
+    enable = true;
+    archiveFile = "/home/user/Downloads/postgresql_18.1-2.1C_ubuntu_x86_64_package.tar.bz2";
+    ensureDatabases = [ "mydb" ];
+    ensureUsers = [
+      {
+        name = "usr1cv8";
+        ensureDBOwnership = true;
+      }
+    ];
+  };
+}
+```
+
+`services.postgresql_1c.enable` включает штатный `services.postgresql` с
+пакетом, собранным из `archiveFile`. Опции вроде `dataDir`, `settings`,
+`ensureDatabases`, `ensureUsers`, `authentication`, `extensions` — это
+алиасы на одноимённые опции `services.postgresql.*`, работают так же, как
+в штатном модуле nixpkgs. `addToSystemPackages` (по умолчанию `true`)
+кладёт клиентские утилиты (`psql`, `pg_dump` и т.п.) в
+`environment.systemPackages`.
+
 ## 1C-Connect
 
 `pkgs/onec-connect.nix` — пакет для официального Linux-клиента
 [1C-Connect](https://1c-connect.com/), сервиса удалённого доступа/
-техподдержки от 1С. Дистрибутив скачивается с `updates.1c-connect.com` и
-запускается как готовый `.tar.gz` без сборки из исходников; пакет лишь
-патчит ELF-зависимости через `autoPatchelfHook` и оборачивает бинарник
-нужным `LD_LIBRARY_PATH`. С самим 1С:Предприятием он никак не связан —
-общее только происхождение от фирмы 1С, но экспортируется из этого же
-flake как отдельный пакет: `packages.${system}.onec-connect`.
+техподдержки от 1С. С самим 1С:Предприятием он никак не связан — общее
+только происхождение от фирмы 1С, но экспортируется из этого же flake как
+отдельный пакет: `packages.${system}.onec-connect`.
 
 NixOS-модуля у него нет — подключается через `environment.systemPackages`
 из flake-input (см. [Подключение флейка](#подключение-флейка)):
