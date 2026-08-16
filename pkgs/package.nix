@@ -2,7 +2,7 @@
 , stdenv
 , autoPatchelfHook
 , wrapGAppsHook3
-, util-linux
+, bubblewrap
 , unzip
 , glibc
 , krb5
@@ -42,14 +42,24 @@
 # менять не нужно, если только 1С не переименует сами компоненты.
 #
 # Инсталлятор — бинарник InstallBuilder, который жёстко требует
-# geteuid() == 0 и всегда пишет служебный файл в /usr/local/bin в обход
-# --prefix. Внутри песочницы `nix build` настоящего root, разумеется, нет,
-# но и не нужен: непривилегированный user namespace (`unshare --user
-# --map-root-user`) даёт ровно то, что требует эта проверка, а корень
-# песочницы и так принадлежит пользователю сборки, так что запись в
-# /usr/local/bin (после mkdir -p) проходит без дополнительных трюков с
-# bind-mount. Реальных привилегий процесс не получает, наружу это никак не
-# просачивается — сборка остаётся обычной, воспроизводимой, в песочнице.
+# geteuid() == 0, всегда пишет служебный файл в /usr/local/bin в обход
+# --prefix и запускается через интерпретатор /lib64/ld-linux-x86-64.so.2
+# (обычный не-NixOS ELF). Ничего этого в песочнице `nix build` нет, и
+# настоящий root не нужен: непривилегированный user namespace даёт ровно
+# то, что требует проверка geteuid(), а недостающий кусок FHS собирается
+# рядом, в отдельном пространстве монтирования.
+#
+# Раньше здесь хватало `unshare --user --map-root-user` плюс `mkdir -p
+# /lib64 /usr/local/bin` прямо в корне песочницы. С Nix 2.34 так больше
+# нельзя: корень песочницы принадлежит немаппящемуся наружу uid и имеет
+# режим 0750, поэтому процесс сборки в него писать не может (root внутри
+# user namespace тут не помогает — capabilities действуют только на
+# маппленные uid). Поэтому FHS строится в собственном корне-tmpfs через
+# bubblewrap: загрузчик glibc подставляется симлинком по нужному пути,
+# /usr/local/bin создаётся как обычный каталог, а рабочий каталог сборки
+# пробрасывается bind-mount'ом внутрь. Реальных привилегий процесс
+# по-прежнему не получает, наружу это никак не просачивается — сборка
+# остаётся обычной, воспроизводимой, в песочнице.
 let
 mkOnec =
   { archiveFile # строка — абсолютный путь к дистрибутиву-архиву (.zip)
@@ -92,7 +102,7 @@ mkOnec =
     # загружаются ДВЕ разные libharfbuzz.so.0 (nix'овая и хостовая) и
     # процесс падает по SIGSEGV прямо в рендеринге текста, что и
     # воспроизводилось до этого фикса.
-    nativeBuildInputs = [ autoPatchelfHook util-linux patchelf unzip ]
+    nativeBuildInputs = [ autoPatchelfHook bubblewrap patchelf unzip ]
       ++ lib.optionals isClient [ wrapGAppsHook3 gcc ];
 
     # GTK/WebKit-стек нужен только клиентским компонентам (client_thin,
@@ -189,11 +199,30 @@ mkOnec =
       # /lib64/ld-linux-x86-64.so.2, которого в песочнице сборки нет (в
       # отличие от обычного FHS-хоста). Патчить сам .run нельзя — он сам
       # распаковывает и запускает вложенные бинарники с тем же
-      # интерпретатором. Проще подсунуть по этому пути загрузчик glibc из
-      # nixpkgs: корень песочницы принадлежит пользователю сборки, так что
-      # создать /lib64 можно без всяких дополнительных привилегий.
-      mkdir -p /lib64 /usr/local/bin
-      ln -sf ${glibc}/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+      # интерпретатором. Поэтому весь недостающий FHS собирается в
+      # отдельном корне-tmpfs через bubblewrap (см. комментарий в шапке
+      # файла): загрузчик glibc по нужному пути, писабельный /usr/local/bin
+      # и uid 0 для проверки geteuid() внутри инсталлятора.
+      #
+      # TMPDIR намеренно уводится в проброшенный каталог сборки, а не в
+      # /tmp: /tmp внутри bubblewrap — это tmpfs в оперативной памяти, а
+      # InstallBuilder распаковывает туда весь дистрибутив (гигабайты).
+      mkdir -p "$NIX_BUILD_TOP/fhs-tmp"
+      runInFHS() {
+        bwrap \
+          --unshare-user --uid 0 --gid 0 \
+          --ro-bind /nix /nix \
+          --ro-bind /etc /etc \
+          --ro-bind /bin /bin \
+          --bind "$NIX_BUILD_TOP" "$NIX_BUILD_TOP" \
+          --proc /proc --dev /dev \
+          --tmpfs /tmp --tmpfs /var \
+          --dir /usr/local/bin \
+          --symlink ${glibc}/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 \
+          --setenv TMPDIR "$NIX_BUILD_TOP/fhs-tmp" \
+          --chdir "$PWD" \
+          -- "$@"
+      }
 
       # Достаём из --help актуальный на момент сборки список всех
       # допустимых компонентов (строка "Разрешено: ..." сразу после
@@ -203,7 +232,7 @@ mkOnec =
       # превращается в "?????" (нечитаемо для awk), а англ. текст — чистый
       # ASCII и не зависит от локали. На выбранный пользователем язык
       # самой установки (см. ниже) это никак не влияет.
-      all_components=$("$installer" --help --installer-language en 2>&1 | awk '
+      all_components=$(runInFHS "$installer" --help --installer-language en 2>&1 | awk '
         /--enable-components/ { armed=1 }
         armed && /Allowed:/   { sub(/^.*Allowed: */, ""); print; exit }
       ')
@@ -231,7 +260,7 @@ mkOnec =
       workroot="$PWD/install-root"
       mkdir -p "$workroot"
 
-      unshare --user --map-root-user -- \
+      runInFHS \
         "$installer" \
           --mode unattended --unattendedmodeui minimal \
           --installer-language "${language}" \
