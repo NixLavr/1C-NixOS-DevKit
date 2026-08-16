@@ -168,8 +168,13 @@ mkOnec =
     # всей системной зависимости: cairo+fontconfig+freetype (через них же
     # и системный harfbuzz приходит), поверх того, что уже собирали из run
     # самого пакета.
+    # fontconfig.lib, а НЕ fontconfig: у fontconfig в nixpkgs дефолтный
+    # выход — "bin" (в нём только bin/ и share/, каталога lib нет вовсе),
+    # так что "${fontconfig}/lib" — несуществующий путь. В RUNPATH он
+    # просто молча игнорируется, а вот в dlopen-шиме ниже такой путь
+    # означал бы dlopen() == NULL (см. там же).
     appendRunpaths = lib.optionals isClient (map (p: "${p}/lib") [
-      harfbuzz cairo fontconfig freetype
+      harfbuzz cairo fontconfig.lib freetype
     ]);
 
     installPhase = ''
@@ -408,7 +413,7 @@ mkOnec =
         EOF
         sed -e "s|@HARFBUZZ@|${harfbuzz}/lib/libharfbuzz.so.0|" \
             -e "s|@CAIRO@|${cairo}/lib/libcairo.so.2|" \
-            -e "s|@FONTCONFIG@|${fontconfig}/lib/libfontconfig.so.1|" \
+            -e "s|@FONTCONFIG@|${fontconfig.lib}/lib/libfontconfig.so.1|" \
             -e "s|@FREETYPE@|${freetype}/lib/libfreetype.so.6|" \
             dlopen-remap.c > dlopen-remap-real.c
         ${gcc}/bin/gcc -O2 -shared -fPIC -o "$out/lib/dlopen-remap.so" dlopen-remap-real.c -ldl
