@@ -83,6 +83,23 @@ let
       ''
     );
 
+  # core83.so собирает и запускает через /bin/sh команду вида
+  #   /sbin/ldconfig -p | awk '/^[\t ]*<библиотека>/ ...'
+  # — так 1С ищет опциональные клиентские библиотеки СУБД (libpq,
+  # libodbc, libmysqlclient). В PATH сервиса systemd на NixOS есть
+  # coreutils/findutils/grep/sed, но НЕ gawk, поэтому в журнал каждые
+  # полминуты сыпалось "awk: command not found". Даём awk.
+  #
+  # Вторую половину этой команды починить нельзя и не нужно:
+  # /sbin/ldconfig вызывается по абсолютному пути (PATH не участвует), а
+  # на NixOS нет /etc/ld.so.cache — даже штатный ldconfig из nixpkgs на
+  # `-p` отвечает "Can't open cache file". Библиотеки здесь ищутся через
+  # RUNPATH, так что сам способ поиска бессмысленен: probe в любом случае
+  # вернёт пустой список. На работу это не влияет (внешние СУБД
+  # подключаются через LD_LIBRARY_PATH сервиса), в журнале остаётся одна
+  # строка про отсутствующий /sbin/ldconfig.
+  servicePath = [ pkgs.gawk ];
+
   commonServiceConfig = {
     Type = "simple";
     User = cfg.server.user;
@@ -461,6 +478,7 @@ in
             description = "1C:Enterprise Server 8.3 (${v}, инстанс ${name})";
             after = [ "network.target" ];
             wantedBy = [ "multi-user.target" ];
+            path = servicePath;
 
             environment = optionalAttrs (full.settings.keytabFile != null) {
               SRV1CV8_KEYTAB = toString full.settings.keytabFile;
@@ -497,6 +515,7 @@ in
             description = "1C:Enterprise Standalone Server 8.3 (${v}, инстанс ${name})";
             after = [ "network.target" ];
             wantedBy = [ "multi-user.target" ];
+            path = servicePath;
 
             serviceConfig = commonServiceConfig // {
               ExecStartPre = prepareDataDir "standalone-${name}" standalone.settings.data;
@@ -526,6 +545,7 @@ in
               "1c-server-${name}.service"
             ];
             wantedBy = [ "multi-user.target" ];
+            path = servicePath;
 
             serviceConfig = commonServiceConfig // {
               ExecStart = concatStringsSep " " (
