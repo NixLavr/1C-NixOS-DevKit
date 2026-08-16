@@ -440,7 +440,9 @@ in
         group = cfg.server.group;
         home = cfg.server.home;
         createHome = true;
-        description = "1C:Enterprise server";
+        # Без двоеточия: NixOS требует, чтобы GECOS-поле не содержало ни
+        # переносов строк, ни ":" — это разделитель полей в /etc/passwd.
+        description = "1C Enterprise server";
       };
 
       environment.systemPackages = programPackages;
