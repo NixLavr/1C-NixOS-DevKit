@@ -59,7 +59,10 @@ let
 
       # toString + "/." вместо пути-литерала: иначе парсер Nix падает на
       # путях с нелатинскими символами в каталогах.
-      src = if builtins.isPath archiveFile then archiveFile else /. + toString archiveFile;
+      src = if builtins.isPath archiveFile || lib.isDerivation archiveFile then
+        archiveFile
+      else
+        /. + toString archiveFile;
       dontUnpack = true;
       dontConfigure = true;
       dontBuild = true;
