@@ -16,7 +16,7 @@
       # использования.
       lib.${system}.mkOnec = pkgs.callPackage ./pkgs/package.nix { };
 
-      nixosModules.default = import ./module.nix;
+      nixosModules.default = import ./modules/module.nix;
       nixosModules.onec = self.nixosModules.default;
     };
 }
