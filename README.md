@@ -58,8 +58,10 @@ NixOS-модуль делает это сам, см. `client.linkToOpt`.
 }
 ```
 
-Для 1C:EDT модуля нет — это просто пакет, генератор
-`onec-devkit.lib.${system}.mkOnecEdt`, подробности — [1C:EDT](#1cedt).
+Для 1C:EDT модуля нет — это просто пакет
+(`onec-devkit.packages.${system}.onec-edt`) или генератор
+`onec-devkit.lib.${system}.mkOnecEdt` под свою версию дистрибутива;
+готовый пример конфигурации — [Установка через flake](#установка-через-flake).
 Для PostgreSQL 1С аналогично: `onec-devkit.nixosModules.postgresql_1c`,
 генератор пакета — `onec-devkit.lib.${system}.mkPostgresql1c`, подробности —
 [PostgreSQL 1С](#postgresql-1с). Пакет 1C-Connect (без модуля, просто
@@ -220,7 +222,93 @@ mkPostgresql1c {
 
 `pkgs/onec-edt.nix` — пакет
 [1C:Enterprise Development Tools](https://edt.1c.ru) из фирменного
-offline-дистрибутива для Linux.
+offline-дистрибутива для Linux. NixOS-модуля у него нет — это обычный
+пакет в `environment.systemPackages`.
+
+### Установка через flake
+
+Шаг 1. Скачать offline-дистрибутив с [releases.1c.ru](https://releases.1c.ru)
+и положить архив в стор — один раз, руками:
+
+```console
+$ nix store add-file --name 1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz \
+    ~/Downloads/1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz
+/nix/store/8f26d03z...-1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz
+```
+
+Флейк не скачивает и не перевыкладывает дистрибутив: `pkgs.requireFile`
+только ссылается на уже лежащий в сторе архив по имени и хешу. Хеш даёт
+`nix hash file --type sha256 --base16 <архив>`.
+
+Шаг 2. Подключить флейк. EDT бесполезен без самой платформы —
+`services.onec` из того же флейка публикует её в `/opt/1cv8/x86_64/<версия>`,
+где EDT её и ищет:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    onec-devkit.url = "github:NixLavr/1C-NixOS-DevKit";
+  };
+
+  outputs =
+    { self, nixpkgs, onec-devkit, ... }:
+    let
+      system = "x86_64-linux";
+    in
+    {
+      nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          onec-devkit.nixosModules.default
+          { nixpkgs.config.allowUnfree = true; }
+          (
+            { pkgs, ... }:
+            {
+              # Сама среда разработки.
+              environment.systemPackages = [
+                (onec-devkit.lib.${system}.mkOnecEdt {
+                  archiveFile = pkgs.requireFile {
+                    name = "1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz";
+                    sha256 = "892ea80e7b9019a7a333804cbdcbc84a1a49df47de88d13469639bed4773ec53";
+                    message = "nix store add-file --name 1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz /путь/к/архиву";
+                  };
+                })
+              ];
+
+              # Платформа, которую EDT найдёт в /opt/1cv8/x86_64/<версия>.
+              services.onec = {
+                enable = true;
+                archiveFile = pkgs.requireFile {
+                  name = "server64_8_3_27_2130.zip";
+                  sha256 = "06e58d4a7a6ffbc2bb414141b5594bf49e4b134cc51e6cbc98bf47c57693b35e";
+                  message = "nix store add-file --name server64_8_3_27_2130.zip /путь/к/архиву";
+                };
+                language = "ru";
+                client = {
+                  enable = true;
+                  components = [ "client_full" ];  # EDT нужен именно толстый клиент
+                  # linkToOpt = true;              # включено по умолчанию
+                };
+              };
+            }
+          )
+        ];
+      };
+    };
+}
+```
+
+`nixpkgs.config.allowUnfree = true` обязателен: у обоих пакетов лицензия
+`unfree`.
+
+Если версия EDT та же, что зашита в этом репозитории, вместо вызова
+`mkOnecEdt` достаточно готового пакета —
+`onec-devkit.packages.${system}.onec-edt` (имя и хеш архива прописаны в
+`flake.nix`). Для любой другой версии нужен `mkOnecEdt` со своим
+`requireFile`, как в примере выше.
+
+### Сборка пакета напрямую
 
 ```nix
 let
@@ -233,40 +321,21 @@ mkOnecEdt {
 }
 ```
 
-Как и у 1С:Предприятия, `archiveFile` принимает не только строку с путём,
-но и деривацию — в `flake.nix` архив подключён через `pkgs.requireFile`,
-чтобы сборка не зависела от путей в домашнем каталоге:
+`archiveFile` принимает и строку с путём, и деривацию (`requireFile`).
+Версия выводится из имени файла в обоих случаях — префикс-хеш store-пути
+регулярке не мешает.
 
-```nix
-mkOnecEdt {
-  archiveFile = pkgs.requireFile {
-    name = "1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz";
-    sha256 = "892ea80e7b9019a7a333804cbdcbc84a1a49df47de88d13469639bed4773ec53";
-    message = "…";
-  };
-}
-```
+### Что получается
 
-Архив при этом кладётся в стор руками, один раз:
-
-```console
-$ nix store add-file --name 1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz \
-    ~/Downloads/1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz
-```
-
-Хеш для `sha256` берётся из
-`nix hash file --type sha256 --base16 <архив>`. Версия выводится и из
-такого имени тоже — префикс-хеш store-пути регулярке не мешает.
-
-Даёт три команды: `1cedt` (сама среда разработки), `1cedtcli` (её
+Пакет даёт три команды: `1cedt` (сама среда разработки), `1cedtcli` (её
 консольный режим) и `1cedtstart` (стартер, он же обработчик ссылок
 `e1cedt://`), плюс `.desktop`-файлы для первой и третьей.
 
-Чтобы EDT увидел платформу 1С:Предприятие (без неё нельзя ни запустить,
-ни отладить конфигурацию), клиент должен быть опубликован в
-`/opt/1cv8/x86_64/<версия>` — этим занимается
-`services.onec.client.linkToOpt` из NixOS-модуля, см.
-[NixOS-модуль](#nixos-модуль).
+Без платформы 1С:Предприятие в EDT нельзя ни запустить, ни отладить
+конфигурацию: клиент должен быть опубликован в `/opt/1cv8/x86_64/<версия>`
+— этим занимается `services.onec.client.linkToOpt` (по умолчанию включён),
+см. [NixOS-модуль](#nixos-модуль). Поэтому в примере выше рядом с пакетом
+EDT включён и `services.onec`.
 
 Обратите внимание: `1cedtstart` рассчитан на то, что версии EDT ставятся
 и обновляются штатным инсталлятором 1С и перечислены в его реестре
