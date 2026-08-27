@@ -28,6 +28,7 @@
   patchelf,
   gcc,
   glibcLocales,
+  runCommand,
 }:
 
 # Собирает пакет 1С:Предприятие 8.3 из фирменного zip-архива дистрибутива:
@@ -54,7 +55,7 @@ let
       ) "desktop_icons";
       allComponents = components ++ desktopIconsComponent;
     in
-    stdenv.mkDerivation {
+    stdenv.mkDerivation (finalAttrs: {
       inherit pname version;
 
       # toString + "/." вместо пути-литерала: иначе парсер Nix падает на
@@ -513,6 +514,24 @@ let
         gappsWrapperArgs+=("--set" "LOCALE_ARCHIVE" "${glibcLocales}/lib/locale/locale-archive")
       '';
 
+      # Внешние инструменты (в первую очередь 1C:EDT) ищут платформу по
+      # штатному пути /opt/1cv8/x86_64/<версия> и запускают бинарники прямо
+      # оттуда, мимо обёрток из bin/ — а голый 1cv8/1cv8c без GTK-окружения
+      # и dlopen-remap падает по SIGSEGV. optTree — дерево симлинков на
+      # каталог версии, в котором исполняемые файлы подменены обёртками;
+      # именно его NixOS-модуль публикует в /opt (services.onec.client.linkToOpt).
+      passthru.optTree = runCommand "${pname}-opt-${version}" { } ''
+        mkdir -p "$out"
+        cp -as "${finalAttrs.finalPackage}/opt/1cv8/x86_64/${version}/." "$out/"
+        find "$out" -type d -exec chmod u+w {} +
+        for w in "${finalAttrs.finalPackage}"/bin/*; do
+          name="$(basename "$w")"
+          if [ -e "$out/$name" ]; then
+            ln -sf "$w" "$out/$name"
+          fi
+        done
+      '';
+
       meta = {
         homepage = "https://1c.ru";
         license = lib.licenses.unfree;
@@ -520,6 +539,6 @@ let
         sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
       }
       // meta;
-    };
+    });
 in
 mkOnec

@@ -35,9 +35,11 @@ let
   # "en" в список компонентов не добавляется — он всегда в комплекте.
   languageComponents = optional (cfg.language != "en") cfg.language;
 
+  clientVersion = resolveVersion "client" cfg.archiveFile cfg.version;
+
   clientPackage = mkOnec {
     inherit (cfg) archiveFile language;
-    version = resolveVersion "client" cfg.archiveFile cfg.version;
+    version = clientVersion;
     components = unique (cfg.client.components ++ languageComponents);
     pname = "1c-enterprise-client";
   };
@@ -374,6 +376,28 @@ in
           (толстый клиент с конфигуратором).
         '';
       };
+
+      linkToOpt = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Опубликовать клиент по штатному для 1С пути
+          `/opt/1cv8/x86_64/<версия>` (симлинк через systemd-tmpfiles).
+
+          Нужно для 1C:EDT: версии платформы он ищет, перебирая подкаталоги
+          `/opt/1cv8/i386` и `/opt/1cv8/x86_64` (раскладка единого
+          дистрибутива, 8.3.18+) и `/opt/1C/v8.3/<арх>` (старая, по одной
+          версии), а саму версию берёт из имени каталога. Запускает он
+          затем `1cv8`, `1cv8c`, `dbgs` и `rphost` прямо оттуда, поэтому
+          публикуется не каталог пакета напрямую, а `passthru.optTree` —
+          дерево симлинков, в котором клиентские бинарники подменены
+          обёртками из `bin/` (голые падают без GTK-окружения).
+
+          Толстый клиент EDT нужен обязательно: с `client_thin` в каталоге
+          не будет ни `1cv8`, ни конфигуратора, и EDT сочтёт такую версию
+          непригодной.
+        '';
+      };
     };
 
     server = {
@@ -424,6 +448,14 @@ in
   config = mkIf cfg.enable (mkMerge [
     (mkIf cfg.client.enable {
       environment.systemPackages = [ clientPackage ];
+    })
+
+    (mkIf (cfg.client.enable && cfg.client.linkToOpt) {
+      systemd.tmpfiles.rules = [
+        "d /opt/1cv8 0755 root root -"
+        "d /opt/1cv8/x86_64 0755 root root -"
+        "L+ /opt/1cv8/x86_64/${clientVersion} - - - - ${clientPackage.optTree}"
+      ];
     })
 
     (mkIf (enabledInstances != { }) {
