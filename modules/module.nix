@@ -37,6 +37,7 @@ let
 
   clientVersion = resolveVersion "client" cfg.archiveFile cfg.version;
   webConfigFile = "${cfg.web.stateDir}/httpd.conf";
+  webCompatConfigFile = "/etc/httpd/conf/httpd.conf";
 
   clientPackage = mkOnec {
     inherit (cfg) archiveFile language;
@@ -509,30 +510,45 @@ in
         ];
         extraConfig = mkAfter ''
           # Публикации, созданные в Конфигураторе через webinst.
-          IncludeOptional ${webConfigFile}
+          # Подключаем именно путь, известный Конфигуратору: он может
+          # перезаписать симлинк, а Apache всё равно прочитает его результат.
+          IncludeOptional ${webCompatConfigFile}
         '';
       };
 
       # Конфигуратор распознаёт Apache по RPM-путям. На NixOS они отсутствуют,
       # поэтому даём совместимые ссылки, не заменяя существующие пользовательские
-      # файлы (тип L без +). Запись webinst всегда перенаправляется обёрткой
-      # в webConfigFile, а не в неизменяемый /etc/httpd/httpd.conf.
+      # файлы (тип L без +). В отличие от основного NixOS httpd.conf,
+      # совместимый файл указывает на изменяемые публикации.
       systemd.tmpfiles.rules = [
         "d ${cfg.web.stateDir} 0755 root root -"
         "f ${webConfigFile} 0644 root root -"
         "d /etc/httpd/conf 0755 root root -"
-        "L /etc/httpd/conf/httpd.conf - - - - /etc/httpd/httpd.conf"
+        "L ${webCompatConfigFile} - - - - ${webConfigFile}"
         "d /usr/sbin 0755 root root -"
         "L /usr/sbin/httpd - - - - ${config.services.httpd.package.out}/bin/httpd"
         "L /usr/sbin/apachectl - - - - /run/current-system/sw/bin/apachectl"
       ];
 
-      # webinst переписывает файл публикаций атомарно. Проверяем обновлённую
-      # конфигурацию и перезагружаем Apache без ручного systemctl restart.
+      # Миграция ссылки, созданной ранней версией модуля: меняем только
+      # известную старую цель, чужой файл или симлинк не трогаем.
+      system.activationScripts.onec-web-apache-compat = ''
+        compatConfig=${lib.escapeShellArg webCompatConfigFile}
+        stateConfig=${lib.escapeShellArg webConfigFile}
+        if [ -L "$compatConfig" ] && [ "$(readlink "$compatConfig")" = /etc/httpd/httpd.conf ]; then
+          ln -sfn "$stateConfig" "$compatConfig"
+        elif [ ! -e "$compatConfig" ] && [ ! -L "$compatConfig" ]; then
+          ln -s "$stateConfig" "$compatConfig"
+        fi
+      '';
+
+      # Проверяем обновлённую конфигурацию и перезагружаем Apache без ручного
+      # systemctl restart. Следим также за совместимым путём: Конфигуратор
+      # может заменить исходный симлинк обычным файлом.
       systemd.paths.onec-web-reload-httpd = {
         wantedBy = [ "multi-user.target" ];
         pathConfig = {
-          PathChanged = [ webConfigFile ];
+          PathChanged = [ webConfigFile webCompatConfigFile ];
           Unit = "onec-web-reload-httpd.service";
         };
       };
