@@ -517,6 +517,11 @@ in
         '';
       };
 
+      # Конфигуратор определяет Apache, запуская `apache -v`, `apache2 -v`
+      # и `httpd -v` по имени. Пакет сервиса нужен в системном PATH NixOS,
+      # который в том числе используется sudo при запуске Конфигуратора.
+      environment.systemPackages = [ config.services.httpd.package ];
+
       # Конфигуратор распознаёт Apache по RPM-путям. На NixOS они отсутствуют,
       # поэтому даём совместимые ссылки, не заменяя существующие пользовательские
       # файлы (тип L без +). В отличие от основного NixOS httpd.conf,
@@ -535,6 +540,12 @@ in
         "L /usr/sbin/apachectl - - - - /run/current-system/sw/bin/apachectl"
         "L /usr/sbin/apache2 - - - - ${config.services.httpd.package.out}/bin/httpd"
         "L /usr/sbin/apache2ctl - - - - /run/current-system/sw/bin/apachectl"
+        # Запасной путь для окружений, где sudo не включает /usr/sbin в PATH.
+        # L без + не заменяет реальные пользовательские команды.
+        "d /usr/bin 0755 root root -"
+        "L /usr/bin/apache - - - - ${config.services.httpd.package.out}/bin/httpd"
+        "L /usr/bin/apache2 - - - - ${config.services.httpd.package.out}/bin/httpd"
+        "L /usr/bin/httpd - - - - ${config.services.httpd.package.out}/bin/httpd"
       ];
 
       # Миграция ссылки, созданной ранней версией модуля: меняем только
