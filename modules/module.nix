@@ -38,6 +38,7 @@ let
   clientVersion = resolveVersion "client" cfg.archiveFile cfg.version;
   webConfigFile = "${cfg.web.stateDir}/httpd.conf";
   webCompatConfigFile = "/etc/httpd/conf/httpd.conf";
+  webDebianCompatConfigFile = "/etc/apache2/apache2.conf";
 
   clientPackage = mkOnec {
     inherit (cfg) archiveFile language;
@@ -525,9 +526,15 @@ in
         "f ${webConfigFile} 0644 root root -"
         "d /etc/httpd/conf 0755 root root -"
         "L ${webCompatConfigFile} - - - - ${webConfigFile}"
+        # 1С для Linux ищет Apache также по Debian-путям. Оба имени
+        # конфигурации указывают на один и тот же изменяемый файл публикаций.
+        "d /etc/apache2 0755 root root -"
+        "L ${webDebianCompatConfigFile} - - - - ${webConfigFile}"
         "d /usr/sbin 0755 root root -"
         "L /usr/sbin/httpd - - - - ${config.services.httpd.package.out}/bin/httpd"
         "L /usr/sbin/apachectl - - - - /run/current-system/sw/bin/apachectl"
+        "L /usr/sbin/apache2 - - - - ${config.services.httpd.package.out}/bin/httpd"
+        "L /usr/sbin/apache2ctl - - - - /run/current-system/sw/bin/apachectl"
       ];
 
       # Миграция ссылки, созданной ранней версией модуля: меняем только
@@ -548,7 +555,7 @@ in
       systemd.paths.onec-web-reload-httpd = {
         wantedBy = [ "multi-user.target" ];
         pathConfig = {
-          PathChanged = [ webConfigFile webCompatConfigFile ];
+          PathChanged = [ webConfigFile webCompatConfigFile webDebianCompatConfigFile ];
           Unit = "onec-web-reload-httpd.service";
         };
       };
