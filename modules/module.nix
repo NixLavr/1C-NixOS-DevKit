@@ -49,6 +49,31 @@ let
     pname = "1c-enterprise-client";
     webinstConfigPath = if cfg.web.enable then webConfigFile else null;
   };
+  webModulePath = "${clientPackage}/opt/1cv8/x86_64/${clientVersion}/wsap24.so";
+  webModuleLine = "LoadModule _1cws_module ${webModulePath}";
+  # Держим единственную строку LoadModule в конфиге публикаций. Это важно и
+  # для Apache, и для детектора веб-сервера в Конфигураторе 1С.
+  webModuleEnsureScript = ''
+    stateConfig=${lib.escapeShellArg webConfigFile}
+    moduleLine=${lib.escapeShellArg webModuleLine}
+    if [ ! -f "$stateConfig" ]; then
+      ${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg cfg.web.stateDir}
+      printf '%s\n' "$moduleLine" > "$stateConfig"
+      ${pkgs.coreutils}/bin/chmod 0644 "$stateConfig"
+    else
+      moduleLines="$(${pkgs.gnugrep}/bin/grep -c '^LoadModule _1cws_module ' "$stateConfig" || true)"
+      firstModuleLine="$(${pkgs.gnugrep}/bin/grep -m 1 '^LoadModule _1cws_module ' "$stateConfig" || true)"
+      if [ "$moduleLines" -ne 1 ] || [ "$firstModuleLine" != "$moduleLine" ]; then
+        temporaryConfig="$(${pkgs.coreutils}/bin/mktemp "$stateConfig.XXXXXX")"
+        {
+          printf '%s\n' "$moduleLine"
+          ${pkgs.gnused}/bin/sed '\|^LoadModule _1cws_module |d' "$stateConfig"
+        } > "$temporaryConfig"
+        ${pkgs.coreutils}/bin/chmod 0644 "$temporaryConfig"
+        ${pkgs.coreutils}/bin/mv "$temporaryConfig" "$stateConfig"
+      fi
+    fi
+  '';
 
   # ---------------------------------------------------------------------
   # Инстансы сервера
@@ -498,17 +523,11 @@ in
         }
       ];
 
-      # Apache получает модуль 1С декларативно. Имя DSO-символа начинается
-      # с подчёркивания, поэтому это именно _1cws, а не имя файла wsap24.
+      # Apache получает модуль из изменяемого конфига публикаций. Это же
+      # расположение проверяет Конфигуратор при поиске веб-сервера.
       services.httpd = {
         enable = mkDefault true;
         mpm = mkDefault "worker";
-        extraModules = mkAfter [
-          {
-            name = "_1cws";
-            path = "${clientPackage}/opt/1cv8/x86_64/${clientVersion}/wsap24.so";
-          }
-        ];
         extraConfig = mkAfter ''
           # Публикации, созданные в Конфигураторе через webinst.
           # Подключаем именно путь, известный Конфигуратору: он может
@@ -565,6 +584,7 @@ in
         elif [ ! -e "$compatConfig" ] && [ ! -L "$compatConfig" ]; then
           ln -s "$stateConfig" "$compatConfig"
         fi
+        ${webModuleEnsureScript}
       '';
 
       # Проверяем обновлённую конфигурацию и перезагружаем Apache без ручного
@@ -584,6 +604,7 @@ in
         path = [ config.services.httpd.package pkgs.systemd ];
         serviceConfig.Type = "oneshot";
         script = ''
+          ${webModuleEnsureScript}
           if httpd -t -f /etc/httpd/httpd.conf; then
             systemctl reload httpd.service
           fi

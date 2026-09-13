@@ -27,7 +27,6 @@
   freetype,
   patchelf,
   gcc,
-  gnused,
   glibcLocales,
   runCommand,
 }:
@@ -365,11 +364,8 @@ let
           # затем пытается переписать его целиком. Подменяем только путь
           # конфигурации: изменяемые публикации остаются в /var/lib, который
           # подключён Apache через IncludeOptional (см. module.nix).
-          #
-          # Сам webinst при первой публикации добавляет LoadModule
-          # _1cws_module. Модуль уже загружен декларативно, поэтому вырезаем
-          # эту строку после успешного вызова, иначе Apache откажется
-          # перезагружаться из-за повторной загрузки DSO.
+          # Строка LoadModule остаётся в этом файле: Конфигуратор ищет
+          # расширение 1С именно в конфигурации Apache, которую он читает.
           if [ -e "$out/bin/webinst" ]; then
             mkdir -p "$out/libexec"
             mv "$out/bin/webinst" "$out/libexec/webinst-real"
@@ -393,12 +389,7 @@ let
             esac
           done
 
-          @webinst-real@ "''${webinst_args[@]}" -confPath ${lib.escapeShellArg (toString webinstConfigPath)}
-          result=$?
-          if [ "$result" -eq 0 ] && [ -e ${lib.escapeShellArg (toString webinstConfigPath)} ]; then
-            ${gnused}/bin/sed -i '\|^LoadModule _1cws_module |d' ${lib.escapeShellArg (toString webinstConfigPath)}
-          fi
-          exit "$result"
+          exec @webinst-real@ "''${webinst_args[@]}" -confPath ${lib.escapeShellArg (toString webinstConfigPath)}
           EOF
             substituteInPlace "$out/bin/webinst" \
               --replace-fail @webinst-real@ "$out/libexec/webinst-real"
