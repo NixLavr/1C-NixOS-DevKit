@@ -518,9 +518,16 @@ in
       };
 
       # Конфигуратор определяет Apache, запуская `apache -v`, `apache2 -v`
-      # и `httpd -v` по имени. Пакет сервиса нужен в системном PATH NixOS,
-      # который в том числе используется sudo при запуске Конфигуратора.
-      environment.systemPackages = [ config.services.httpd.package ];
+      # и `httpd -v` по имени. Пакет сервиса и оба имени-синонима кладём в
+      # системный PATH NixOS — именно его использует sudo, а не /usr/bin.
+      environment.systemPackages = [
+        config.services.httpd.package
+        (pkgs.runCommand "onec-apache-command-aliases" { } ''
+          mkdir -p "$out/bin"
+          ln -s ${config.services.httpd.package}/bin/httpd "$out/bin/apache"
+          ln -s ${config.services.httpd.package}/bin/httpd "$out/bin/apache2"
+        '')
+      ];
 
       # Конфигуратор распознаёт Apache по RPM-путям. На NixOS они отсутствуют,
       # поэтому даём совместимые ссылки, не заменяя существующие пользовательские
