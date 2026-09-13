@@ -27,6 +27,7 @@
   freetype,
   patchelf,
   gcc,
+  gnused,
   glibcLocales,
   runCommand,
 }:
@@ -44,6 +45,10 @@ let
       version,
       pname,
       meta ? { },
+      # Если задан, webinst пишет публикации в изменяемый файл, который
+      # Apache подключает из NixOS-модуля. Это нужно только для работы
+      # публикации из Конфигуратора на NixOS.
+      webinstConfigPath ? null,
     }:
     let
       isClient = lib.any (c: lib.hasPrefix "client_" c) components;
@@ -353,6 +358,53 @@ let
             ln -sf "$dest/$b" "$out/bin/$b"
           fi
         done
+
+        ${lib.optionalString (webinstConfigPath != null) ''
+          # В NixOS основной httpd.conf — симлинк в /nix/store. Конфигуратор
+          # запускает webinst и передаёт ему этот неизменяемый файл, а webinst
+          # затем пытается переписать его целиком. Подменяем только путь
+          # конфигурации: изменяемые публикации остаются в /var/lib, который
+          # подключён Apache через IncludeOptional (см. module.nix).
+          #
+          # Сам webinst при первой публикации добавляет LoadModule
+          # _1cws_module. Модуль уже загружен декларативно, поэтому вырезаем
+          # эту строку после успешного вызова, иначе Apache откажется
+          # перезагружаться из-за повторной загрузки DSO.
+          if [ -e "$out/bin/webinst" ]; then
+            mkdir -p "$out/libexec"
+            mv "$out/bin/webinst" "$out/libexec/webinst-real"
+            cat > "$out/bin/webinst" <<'EOF'
+          #!${stdenv.shell}
+          set -u
+
+          webinst_args=()
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              -confPath|-confpath)
+                shift
+                if [ "$#" -gt 0 ]; then
+                  shift
+                fi
+                ;;
+              *)
+                webinst_args+=("$1")
+                shift
+                ;;
+            esac
+          done
+
+          @webinst-real@ "''${webinst_args[@]}" -confPath ${lib.escapeShellArg (toString webinstConfigPath)}
+          result=$?
+          if [ "$result" -eq 0 ] && [ -e ${lib.escapeShellArg (toString webinstConfigPath)} ]; then
+            ${gnused}/bin/sed -i '\|^LoadModule _1cws_module |d' ${lib.escapeShellArg (toString webinstConfigPath)}
+          fi
+          exit "$result"
+          EOF
+            substituteInPlace "$out/bin/webinst" \
+              --replace-fail @webinst-real@ "$out/libexec/webinst-real"
+            chmod +x "$out/bin/webinst"
+          fi
+        ''}
 
         ${lib.optionalString isClient ''
                   # desktop_icons пишет .desktop-файлы и иконки вне песочницы;

@@ -36,12 +36,16 @@ let
   languageComponents = optional (cfg.language != "en") cfg.language;
 
   clientVersion = resolveVersion "client" cfg.archiveFile cfg.version;
+  webConfigFile = "${cfg.web.stateDir}/httpd.conf";
 
   clientPackage = mkOnec {
     inherit (cfg) archiveFile language;
     version = clientVersion;
-    components = unique (cfg.client.components ++ languageComponents);
+    # Компонент ws ставится только для web.enable: он содержит webinst и
+    # wsap24.so. Пользователю не нужно дублировать его в client.components.
+    components = unique (cfg.client.components ++ optional cfg.web.enable "ws" ++ languageComponents);
     pname = "1c-enterprise-client";
+    webinstConfigPath = if cfg.web.enable then webConfigFile else null;
   };
 
   # ---------------------------------------------------------------------
@@ -400,6 +404,20 @@ in
       };
     };
 
+    web = {
+      enable = mkEnableOption "публикацию веб-клиента из Конфигуратора через Apache 2.4";
+
+      stateDir = mkOption {
+        type = types.str;
+        default = "/var/lib/1c-web";
+        description = ''
+          Каталог с изменяемой конфигурацией публикаций, которые создаёт
+          Конфигуратор. Файл `httpd.conf` в этом каталоге подключается в
+          основную конфигурацию Apache и не перезаписывается `nixos-rebuild`.
+        '';
+      };
+    };
+
     server = {
       user = mkOption {
         type = types.str;
@@ -456,6 +474,80 @@ in
         "d /opt/1cv8/x86_64 0755 root root -"
         "L+ /opt/1cv8/x86_64/${clientVersion} - - - - ${clientPackage.optTree}"
       ];
+    })
+
+    (mkIf cfg.web.enable {
+      assertions = [
+        {
+          assertion = cfg.client.enable;
+          message = "services.onec.web.enable требует services.onec.client.enable = true";
+        }
+        {
+          assertion = elem "client_full" cfg.client.components;
+          message = "services.onec.web.enable требует components = [ \"client_full\" … ]; Конфигуратор отсутствует в client_thin";
+        }
+        {
+          assertion = cfg.client.linkToOpt;
+          message = "services.onec.web.enable требует services.onec.client.linkToOpt = true, чтобы Конфигуратор запускал webinst из /opt";
+        }
+        {
+          assertion = config.services.httpd.enable;
+          message = "services.onec.web.enable требует включённый services.httpd.enable";
+        }
+      ];
+
+      # Apache получает модуль 1С декларативно. Имя DSO-символа начинается
+      # с подчёркивания, поэтому это именно _1cws, а не имя файла wsap24.
+      services.httpd = {
+        enable = mkDefault true;
+        mpm = mkDefault "worker";
+        extraModules = mkAfter [
+          {
+            name = "_1cws";
+            path = "${clientPackage}/opt/1cv8/x86_64/${clientVersion}/wsap24.so";
+          }
+        ];
+        extraConfig = mkAfter ''
+          # Публикации, созданные в Конфигураторе через webinst.
+          IncludeOptional ${webConfigFile}
+        '';
+      };
+
+      # Конфигуратор распознаёт Apache по RPM-путям. На NixOS они отсутствуют,
+      # поэтому даём совместимые ссылки, не заменяя существующие пользовательские
+      # файлы (тип L без +). Запись webinst всегда перенаправляется обёрткой
+      # в webConfigFile, а не в неизменяемый /etc/httpd/httpd.conf.
+      systemd.tmpfiles.rules = [
+        "d ${cfg.web.stateDir} 0755 root root -"
+        "f ${webConfigFile} 0644 root root -"
+        "d /etc/httpd/conf 0755 root root -"
+        "L /etc/httpd/conf/httpd.conf - - - - /etc/httpd/httpd.conf"
+        "d /usr/sbin 0755 root root -"
+        "L /usr/sbin/httpd - - - - ${config.services.httpd.package.out}/bin/httpd"
+        "L /usr/sbin/apachectl - - - - /run/current-system/sw/bin/apachectl"
+      ];
+
+      # webinst переписывает файл публикаций атомарно. Проверяем обновлённую
+      # конфигурацию и перезагружаем Apache без ручного systemctl restart.
+      systemd.paths.onec-web-reload-httpd = {
+        wantedBy = [ "multi-user.target" ];
+        pathConfig = {
+          PathChanged = [ webConfigFile ];
+          Unit = "onec-web-reload-httpd.service";
+        };
+      };
+
+      systemd.services.onec-web-reload-httpd = {
+        description = "Reload Apache after 1C web publication changes";
+        after = [ "httpd.service" ];
+        path = [ config.services.httpd.package pkgs.systemd ];
+        serviceConfig.Type = "oneshot";
+        script = ''
+          if httpd -t -f /etc/httpd/httpd.conf; then
+            systemctl reload httpd.service
+          fi
+        '';
+      };
     })
 
     (mkIf (enabledInstances != { }) {

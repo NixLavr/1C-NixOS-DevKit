@@ -126,6 +126,40 @@ NixOS-модуль делает это сам, см. `client.linkToOpt`.
 (`components = [ "client_full" ]`) обязателен: в `client_thin` нет ни
 `1cv8`, ни конфигуратора.
 
+### Публикация веб-клиента из Конфигуратора
+
+Для публикации через «Администрирование → Публикация на веб-сервере» включите
+веб-интеграцию и толстый клиент:
+
+```nix
+services.onec = {
+  enable = true;
+  archiveFile = "/home/user/Downloads/server64_8_3_XX_XXXX.zip";
+
+  client = {
+    enable = true;
+    components = [ "client_full" ];
+  };
+
+  web.enable = true;
+};
+```
+
+`web.enable` сам добавляет компонент 1С `ws`, включает Apache 2.4 и загружает
+`wsap24.so` из той же версии платформы. Для Конфигуратора создаются совместимые
+пути Apache (`/usr/sbin/httpd` и `/etc/httpd/conf/httpd.conf`), а его вызовы
+`webinst` из `/opt/1cv8/x86_64/<версия>` пишут публикации в
+`/var/lib/1c-web/httpd.conf`. Этот файл подключается в Apache, сохраняется
+после `nixos-rebuild`, а Apache автоматически проверяется и перезагружается
+после изменения.
+
+Публикацию нужно выполнять с правами root — это требование самой 1С для Linux.
+Запускать вручную `webinst` с `-confPath /etc/httpd/httpd.conf` не нужно и
+нельзя: основной файл NixOS неизменяем. Обёртка из `/opt` сама направляет
+запись в изменяемый файл публикаций. Для файловой ИБ дайте пользователю Apache
+(`services.httpd.user`, обычно `wwwrun`) права на каталог базы; каталог
+публикации, выбранный в Конфигураторе, также должен быть ему доступен.
+
 ### Инстансы сервера
 
 Серверная часть построена вокруг `services.onec.server.instances` — набора
@@ -267,7 +301,7 @@ $ nix store add-file --name 1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz 
             {
               # Сама среда разработки.
               environment.systemPackages = [
-                (onec-devkit.lib.${system}.mkOnecEdt {
+                (onec-devkit.lib.${pkgs.system}.mkOnecEdt {
                   archiveFile = pkgs.requireFile {
                     name = "1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz";
                     sha256 = "892ea80e7b9019a7a333804cbdcbc84a1a49df47de88d13469639bed4773ec53";
@@ -301,6 +335,19 @@ $ nix store add-file --name 1c_edt_distr_offline_2026.1.2_2_linux_x86_64.tar.gz 
 
 `nixpkgs.config.allowUnfree = true` обязателен: у обоих пакетов лицензия
 `unfree`.
+
+Система в индексе `lib.${pkgs.system}` взята из `pkgs`, а не из `let` в
+`outputs`, нарочно: если вынести этот модуль в отдельный файл
+(`imports = [ ./modules/onec.nix ];`), переменная `system` из `outputs` в
+него не попадёт и вычисление упадёт с `undefined variable 'system'`.
+`pkgs.system` работает в обоих случаях; альтернатива — прокинуть систему
+модулям через `specialArgs = { inherit system; }` и добавить `system` в
+аргументы модуля.
+
+Архив в сторе — обычный путь без корня сборщика мусора: `nix-collect-garbage`
+его удаляет. Это не страшно, исходник нужен только когда деривация меняется
+(например, после обновления nixpkgs), — тогда сборка остановится с текстом
+из `message`, и архив нужно добавить в стор той же командой ещё раз.
 
 Если версия EDT та же, что зашита в этом репозитории, вместо вызова
 `mkOnecEdt` достаточно готового пакета —
